@@ -3,6 +3,7 @@
  *
  * Provides a declarative Svelte component for working with HTMX
  * including attribute binding, event handling, and state synchronization.
+ * This implementation follows native Svelte component conventions.
  */
 
 /**
@@ -10,92 +11,148 @@
  *
  * Usage:
  * <Htmx
+ *   tag="button"
  *   hx-get="/api/data"
  *   hx-target="#result"
  *   hx-swap="innerHTML"
  *   on:htmx-request={(event) => console.log('Request started')}
- *   on:htmx-response={(event) => console.log('Response received')}
  * >
  *   Load Data
  * </Htmx>
  */
-export function Htmx(props) {
-  let element
-  const htmxEventHandlers = {}
-  const htmxAttributes = {}
+export const Htmx = {
+  props: ['tag', 'htmxTrigger', 'htmxRefresh'],
 
-  // Separate HTMX attributes from Svelte props and event handlers
-  Object.entries(props).forEach(([key, value]) => {
-    // Handle HTMX attributes (hx-*) and data attributes
-    if (key.startsWith('hx-') || key.startsWith('data-')) {
-      htmxAttributes[key] = value
-    } else if (key.startsWith('on:htmx-')) { // Handle HTMX events (on:htmx-*)
-      const eventName = key.slice(3)
-      htmxEventHandlers[eventName] = value
-    }
-  })
+  emits: [
+    'htmx:beforeRequest',
+    'htmx:afterRequest',
+    'htmx:sendError',
+    'htmx:responseError',
+    'htmx:timeout',
+    'htmx:abort',
+    'htmx:beforeSwap',
+    'htmx:afterSwap',
+    'htmx:beforeSettle',
+    'htmx:afterSettle',
+    'htmx:beforeCleanupElement',
+    'htmx:afterCleanupElement'
+  ],
 
-  // Update HTMX attributes when props change
-  $effect(() => {
-    if (!element) return
+  setup(props, { emit, slots }) {
+    const element = $state(null)
+    let htmxEventListenerCleanups = []
 
-    // Update attributes
-    Object.entries(htmxAttributes).forEach(([key, value]) => {
-      if (value === undefined || value === null) {
-        element.removeAttribute(key)
-      } else {
-        element.setAttribute(key, value)
+    // Calculate pass through props (non-HTMX props)
+    const passThroughProps = $derived(() => {
+      const result = {}
+      Object.entries(props).forEach(([key, value]) => {
+        if (
+          !key.startsWith('hx-') &&
+          !key.startsWith('data-') &&
+          key !== 'tag' &&
+          key !== 'htmxTrigger' &&
+          key !== 'htmxRefresh'
+        ) {
+          result[key] = value
+        }
+      })
+      return result
+    })
+
+    // Process HTMX attributes and events when props change
+    $effect(() => {
+      if (!element) return
+
+      // Update HTMX attributes
+      Object.entries(props).forEach(([key, value]) => {
+        if (key.startsWith('hx-') || key.startsWith('data-')) {
+          if (value === undefined || value === null) {
+            element.removeAttribute(key)
+          } else {
+            element.setAttribute(key, value)
+          }
+        }
+      })
+
+      // Trigger HTMX events programmatically
+      if (props.htmxTrigger) {
+        if (window.htmx) {
+          window.htmx.trigger(element, props.htmxTrigger)
+        }
+      }
+
+      // Refresh HTMX processing
+      if (props.htmxRefresh) {
+        if (window.htmx) {
+          window.htmx.process(element)
+        }
       }
     })
 
-    // Process htmx API calls
-    if (props.htmxTrigger) {
-      htmx.trigger(element, props.htmxTrigger)
-    }
+    // Setup HTMX event listeners when element mounts
+    $effect(() => {
+      if (!element) return
 
-    if (props.htmxRefresh) {
-      htmx.process(element)
-    }
-  })
+      // Clean up existing listeners
+      htmxEventListenerCleanups.forEach(cleanup => cleanup())
+      htmxEventListenerCleanups = []
 
-  // Setup event listeners when element mounts
-  $effect(() => {
-    if (!element) return
+      // Add listeners for all standard HTMX events
+      const htmxEvents = [
+        'htmx:beforeRequest',
+        'htmx:afterRequest',
+        'htmx:sendError',
+        'htmx:responseError',
+        'htmx:timeout',
+        'htmx:abort',
+        'htmx:beforeSwap',
+        'htmx:afterSwap',
+        'htmx:beforeSettle',
+        'htmx:afterSettle',
+        'htmx:beforeCleanupElement',
+        'htmx:afterCleanupElement'
+      ]
 
-    const cleanupFns = []
+      htmxEvents.forEach(eventName => {
+        const handler = (event) => emit(eventName, event)
+        element.addEventListener(eventName, handler)
+        htmxEventListenerCleanups.push(() => element.removeEventListener(eventName, handler))
+      })
 
-    // Add HTMX event listeners
-    Object.entries(htmxEventHandlers).forEach(([eventName, handler]) => {
-      const listener = (event) => {
-        handler({ detail: event, event })
+      // Cleanup on unmount
+      return () => {
+        htmxEventListenerCleanups.forEach(cleanup => cleanup())
       }
-      element.addEventListener(eventName, listener)
-      cleanupFns.push(() => element.removeEventListener(eventName, listener))
     })
 
-    // Cleanup on unmount
-    return () => cleanupFns.forEach(fn => fn())
-  })
-
-  // Pass through all non-HTMX props to the underlying element
-  const passThroughProps = {}
-  Object.entries(props).forEach(([key, value]) => {
-    if (
-      !key.startsWith('hx-') &&
-      !key.startsWith('data-') &&
-      !key.startsWith('on:htmx-') &&
-      key !== 'htmxTrigger' &&
-      key !== 'htmxRefresh'
-    ) {
-      passThroughProps[key] = value
+    return {
+      element,
+      slots,
+      passThroughProps
     }
-  })
+  },
 
-  return createElement(
-    props.tag || 'button',
-    { ...passThroughProps, ref: (el) => element = el },
-    props.children
-  )
+  // Svelte component template using native syntax
+  template: `
+    {#if $props.tag === 'a'}
+      <a {...$passThroughProps} bind:this={element}>{#if $slots.default}{$slots.default()}{/if}</a>
+    {:else if $props.tag === 'div'}
+      <div {...$passThroughProps} bind:this={element}>{#if $slots.default}{$slots.default()}{/if}</div>
+    {:else if $props.tag === 'form'}
+      <form {...$passThroughProps} bind:this={element}>{#if $slots.default}{$slots.default()}{/if}</form>
+    {:else if $props.tag === 'input'}
+      <input {...$passThroughProps} bind:this={element} />
+    {:else if $props.tag === 'select'}
+      <select {...$passThroughProps} bind:this={element}>{#if $slots.default}{$slots.default()}{/if}</select>
+    {:else if $props.tag === 'textarea'}
+      <textarea {...$passThroughProps} bind:this={element}>{#if $slots.default}{$slots.default()}{/if}</textarea>
+    {:else}
+      <button {...$passThroughProps} bind:this={element}>{#if $slots.default}{$slots.default()}{/if}</button>
+    {/if}
+  `
+
+  // Props are automatically bound to element attributes by Svelte
+  // HTMX attributes will be applied in the setup $effect hook
 }
 
 /**
@@ -108,19 +165,19 @@ export function Htmx(props) {
  */
 export function useHtmx() {
   function trigger(target, eventName, detail) {
-    if (typeof htmx === 'undefined') {
+    if (typeof window.htmx === 'undefined') {
       console.warn('htmx is not loaded')
-      return
+      return false
     }
-    htmx.trigger(target, eventName, detail)
+    return window.htmx.trigger(target, eventName, detail)
   }
 
   function process(target) {
-    if (typeof htmx === 'undefined') {
+    if (typeof window.htmx === 'undefined') {
       console.warn('htmx is not loaded')
       return
     }
-    htmx.process(target)
+    window.htmx.process(target)
   }
 
   function refresh(target) {
@@ -128,12 +185,13 @@ export function useHtmx() {
   }
 
   function ajax(options) {
-    if (typeof htmx === 'undefined') {
+    if (typeof window.htmx === 'undefined') {
       console.warn('htmx is not loaded')
       return Promise.reject(new Error('htmx is not loaded'))
     }
+
     return new Promise((resolve, reject) => {
-      htmx.ajax(
+      window.htmx.ajax(
         options.method || 'GET',
         options.url,
         {
@@ -154,11 +212,22 @@ export function useHtmx() {
   }
 
   function takeClass(target, className) {
-    htmx.takeClass(target, className)
+    if (window.htmx) {
+      window.htmx.takeClass(target, className)
+    }
   }
 
   function giveClass(target, className) {
-    htmx.giveClass(target, className)
+    if (window.htmx) {
+      window.htmx.giveClass(target, className)
+    }
+  }
+
+  function values(target) {
+    if (window.htmx) {
+      return window.htmx.values(target)
+    }
+    return {}
   }
 
   return {
@@ -168,7 +237,8 @@ export function useHtmx() {
     ajax,
     takeClass,
     giveClass,
-    htmx: typeof htmx !== 'undefined' ? htmx : null
+    values,
+    htmx: typeof window.htmx !== 'undefined' ? window.htmx : null
   }
 }
 
@@ -178,51 +248,84 @@ export function useHtmx() {
 export function HtmxPlugin() {
   return {
     name: 'htmx-plugin',
-    initialize() {
+    install(app) {
       // Auto-process new elements when they're added to the DOM
-      if (typeof htmx !== 'undefined') {
-        htmx.config.useTemplateFragments = true
+      if (typeof window.htmx !== 'undefined') {
+        window.htmx.config.useTemplateFragments = true
       }
+
+      // Register Htmx component globally
+      app.component('Htmx', Htmx)
     }
   }
 }
 
-// Helper to create elements with Svelte compatibility
-function createElement(tag, props, children) {
-  const element = document.createElement(tag)
+/**
+ * Svelte Action for HTMX
+ *
+ * Alternative usage with Svelte actions for more flexibility
+ *
+ * Usage:
+ * <button use:htmx={{ 'hx-get': '/api/data', 'hx-target': '#result' }}>
+ *   Load Data
+ * </button>
+ */
+export function htmx(element, options) {
+  const cleanupFunctions = []
 
-  // Set props
-  Object.entries(props).forEach(([key, value]) => {
-    if (key === 'ref') {
-      value(element)
-    } else if (key.startsWith('on:')) {
-      const eventName = key.slice(3)
-      element.addEventListener(eventName, value)
-    } else if (key === 'class') {
-      element.className = value
-    } else if (key === 'style' && typeof value === 'object') {
-      Object.assign(element.style, value)
-    } else {
-      element.setAttribute(key, value)
-    }
-  })
+  function updateOptions(newOptions) {
+    // Remove existing attributes
+    Object.keys(options || {}).forEach(key => {
+      if (key.startsWith('hx-') || key.startsWith('data-')) {
+        element.removeAttribute(key)
+      }
+    })
 
-  // Add children
-  if (children) {
-    if (Array.isArray(children)) {
-      children.forEach(child => {
-        if (typeof child === 'string') {
-          element.appendChild(document.createTextNode(child))
-        } else if (child instanceof Node) {
-          element.appendChild(child)
+    // Update with new options
+    options = newOptions || {}
+
+    // Set HTMX attributes
+    Object.entries(options).forEach(([key, value]) => {
+      if (key.startsWith('hx-') || key.startsWith('data-')) {
+        if (value === undefined || value === null) {
+          element.removeAttribute(key)
+        } else {
+          element.setAttribute(key, value)
         }
-      })
-    } else if (typeof children === 'string') {
-      element.textContent = children
-    } else if (children instanceof Node) {
-      element.appendChild(children)
+      }
+    })
+
+    // Process element with HTMX
+    if (window.htmx) {
+      window.htmx.process(element)
     }
   }
 
-  return element
+  // Initial setup
+  updateOptions(options)
+
+  // Setup event listeners
+  if (options.on) {
+    Object.entries(options.on).forEach(([eventName, handler]) => {
+      element.addEventListener(eventName, handler)
+      cleanupFunctions.push(() => element.removeEventListener(eventName, handler))
+    })
+  }
+
+  // Cleanup function
+  function destroy() {
+    cleanupFunctions.forEach(fn => fn())
+
+    // Remove all HTMX attributes
+    Array.from(element.attributes).forEach(attr => {
+      if (attr.name.startsWith('hx-') || attr.name.startsWith('data-')) {
+        element.removeAttribute(attr.name)
+      }
+    })
+  }
+
+  return {
+    update: updateOptions,
+    destroy
+  }
 }
