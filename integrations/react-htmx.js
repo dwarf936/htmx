@@ -1,4 +1,5 @@
-import React, { useEffect, useRef, forwardRef } from 'react'
+import React, { useEffect, useRef, forwardRef, useImperativeHandle } from 'react'
+import { createEventManager } from './event-manager.js'
 
 // 将HTMX属性转换为React props的映射
 const htmxAttributeMap = {
@@ -90,54 +91,78 @@ const Htmx = forwardRef(({ as: Component = 'div', children, ...props }, ref) => 
   }
 
   // 事件桥接：将HTMX事件转换为React事件
+  const eventManagerRef = useRef(null)
+
   useEffect(() => {
     const element = forwardedRef.current
     if (!element) return
 
-    const eventHandlers = {}
+    // 创建事件管理器实例
+    eventManagerRef.current = createEventManager(element)
 
-    // 注册HTMX事件监听器
-    htmxEvents.forEach(eventName => {
-      const handler = (event) => {
-        const reactEventName = `on${eventName.charAt(0).toUpperCase()}${eventName.slice(1).replace(/:/g, '')}`
-        if (props[reactEventName]) {
-          props[reactEventName](event)
-        }
+    // 创建事件映射
+    const eventMap = htmxEvents.reduce((map, eventName) => {
+      const reactEventName = `on${eventName.charAt(0).toUpperCase()}${eventName.slice(1).replace(/:/g, '')}`
+      const handler = props[reactEventName]
+
+      if (handler) {
+        map[eventName] = (event) => handler(event)
       }
 
-      element.addEventListener(eventName, handler)
-      eventHandlers[eventName] = handler
-    })
+      return map
+    }, {})
+
+    // 注册事件监听器，添加防抖处理
+    eventManagerRef.current.addEvents(eventMap, { debounce: 10 })
 
     return () => {
-      // 清理事件监听器
-      Object.entries(eventHandlers).forEach(([eventName, handler]) => {
-        element.removeEventListener(eventName, handler)
-      })
+      // 清理事件管理器
+      if (eventManagerRef.current) {
+        eventManagerRef.current.destroy()
+        eventManagerRef.current = null
+      }
     }
+  }, [forwardedRef])
+
+  // 增量更新事件监听器
+  useEffect(() => {
+    if (!eventManagerRef.current) return
+
+    // 创建新的事件映射
+    const newEventMap = htmxEvents.reduce((map, eventName) => {
+      const reactEventName = `on${eventName.charAt(0).toUpperCase()}${eventName.slice(1).replace(/:/g, '')}`
+      const handler = props[reactEventName]
+
+      if (handler) {
+        map[eventName] = (event) => handler(event)
+      }
+
+      return map
+    }, {})
+
+    // 增量更新事件监听器
+    eventManagerRef.current.updateEvents(newEventMap, { debounce: 10 })
   }, [props])
 
   // 处理React状态与HTMX同步
   useEffect(() => {
+    if (!eventManagerRef.current || !window.htmx) return
+
     const element = forwardedRef.current
-    if (!element || !window.htmx) return
+    if (!element) return
 
     // 确保HTMX正确初始化
     window.htmx.process(element)
 
-    // 监听HTMX更新，同步到React状态
+    // 使用事件管理器注册同步事件
     const handleAfterSwap = (event) => {
       if (props.onHtmxAfterUpdate) {
         props.onHtmxAfterUpdate(event.detail)
       }
     }
 
-    element.addEventListener('htmx:afterSwap', handleAfterSwap)
-
-    return () => {
-      element.removeEventListener('htmx:afterSwap', handleAfterSwap)
-    }
-  }, [props])
+    eventManagerRef.current.on('htmx:afterSwap', handleAfterSwap, { debounce: 0 })
+  }, [props, forwardedRef])
 
   const attributes = getHtmxAttributes()
 

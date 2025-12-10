@@ -1,4 +1,5 @@
 import { onMount, onDestroy, beforeUpdate } from 'svelte'
+import { createEventManager } from './event-manager.js'
 
 /**
  * Svelte HTMX 动作
@@ -8,7 +9,7 @@ import { onMount, onDestroy, beforeUpdate } from 'svelte'
  * @returns {Object} 动作API
  */
 export function htmx(node, options = {}) {
-  let eventListeners = {}
+  let eventManager = null
   let currentOptions = options
 
   /**
@@ -43,27 +44,25 @@ export function htmx(node, options = {}) {
    * 更新事件监听器
    */
   function updateEventListeners(newOptions) {
-    // 移除旧的事件监听器
-    Object.entries(eventListeners).forEach(([eventName, handler]) => {
-      node.removeEventListener(eventName, handler)
-    })
-    eventListeners = {}
+    if (!eventManager) {
+      eventManager = createEventManager(node)
+    }
 
-    // 添加新的事件监听器
+    // 创建事件映射
+    const eventMap = {}
     if (newOptions.on && typeof newOptions.on === 'object') {
       Object.entries(newOptions.on).forEach(([eventName, handler]) => {
         const htmxEventName = eventName.startsWith('htmx:') ? eventName : `htmx:${eventName}`
-
-        const eventHandler = (event) => {
+        eventMap[htmxEventName] = (event) => {
           if (typeof handler === 'function') {
             handler(event)
           }
         }
-
-        node.addEventListener(htmxEventName, eventHandler)
-        eventListeners[htmxEventName] = eventHandler
       })
     }
+
+    // 增量更新事件监听器，添加防抖处理
+    eventManager.updateEvents(eventMap, { debounce: 10 })
   }
 
   /**
@@ -91,9 +90,10 @@ export function htmx(node, options = {}) {
 
   // 清理
   onDestroy(() => {
-    Object.entries(eventListeners).forEach(([eventName, handler]) => {
-      node.removeEventListener(eventName, handler)
-    })
+    if (eventManager) {
+      eventManager.destroy()
+      eventManager = null
+    }
 
     if (window.htmx) {
       window.htmx.abort(node)
@@ -206,6 +206,9 @@ export function syncStoreWithHtmx(store, nodeSelector) {
 
     const node = document.querySelector(nodeSelector)
     if (node) {
+      // 使用事件管理器注册事件监听器
+      const eventManager = createEventManager(node)
+
       // 监听HTMX响应并同步到商店
       const handleAfterSwap = (event) => {
         if (event.detail && event.detail.xhr) {
@@ -219,10 +222,10 @@ export function syncStoreWithHtmx(store, nodeSelector) {
         }
       }
 
-      node.addEventListener('htmx:afterSwap', handleAfterSwap)
+      eventManager.on('htmx:afterSwap', handleAfterSwap, { debounce: 0 })
 
       onDestroy(() => {
-        node.removeEventListener('htmx:afterSwap', handleAfterSwap)
+        eventManager.destroy()
       })
     }
   })
